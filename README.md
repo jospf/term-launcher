@@ -1,1 +1,1 @@
-Basic CLI launhcer written in Rust. 
+Basic CLI launcher written in Rust. 
