@@ -3,7 +3,7 @@ mod config;
 use config::Config;
 use std::env;
 use std::fs;
-use std::io::{stdout, Write};
+use std::io::{Write, stdout};
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -21,7 +21,7 @@ fn main() {
     let config_contents = fs::read_to_string(config_path).expect("Failed to read config");
     let config: Config = toml::from_str(&config_contents).expect("Failed to parse config");
 
-    //Tui setup
+    // TUI setup
     let mut stdout = stdout();
     terminal::enable_raw_mode().unwrap();
     execute!(stdout, terminal::EnterAlternateScreen, cursor::Hide).unwrap();
@@ -36,17 +36,27 @@ fn main() {
             cursor::MoveTo(0, 0)
         )
         .unwrap();
-        println!("Term Launcher (↑ ↓ Enter to launch, q to quit)\n");
+        writeln!(stdout, "Term Launcher (↑ ↓ Enter to launch, q to quit)\n").unwrap();
 
         for (i, app) in config.apps.iter().enumerate() {
+            let y = (i + 2) as u16; // Offset to avoid header
+            execute!(
+                stdout,
+                cursor::MoveTo(0, y),
+                terminal::Clear(ClearType::CurrentLine)
+            )
+            .unwrap();
+
             if i == selected {
-                println!("> {} ({})", app.name, app.key);
+                write!(stdout, "> {} ({})\n", app.name, app.key).unwrap();
             } else {
-                println!("  {} ({})", app.name, app.key);
+                write!(stdout, "  {} ({})\n", app.name, app.key).unwrap();
             }
         }
 
-        // Wait for key event
+        stdout.flush().unwrap();
+
+        // Handle key events
         if let Event::Key(key_event) = event::read().unwrap() {
             match key_event.code {
                 KeyCode::Char('q') => break,
@@ -62,21 +72,33 @@ fn main() {
                 }
                 KeyCode::Enter => {
                     let app = &config.apps[selected];
+
+                    // Leave raw mode and screen for launching
                     terminal::disable_raw_mode().unwrap();
                     execute!(stdout, terminal::LeaveAlternateScreen, cursor::Show).unwrap();
-                    Command::new(&app.cmd)
-                        .spawn()
-                        .expect("Failed to launch command")
-                        .wait()
-                        .expect("App crashed?");
-                    return;
+
+                    // Optional: Clear screen for app launch
+                    Command::new("clear").status().ok();
+
+                    // Launch the app
+                    let status = Command::new(&app.cmd)
+                        .status()
+                        .expect("Failed to launch command");
+
+                    println!("\nProcess exited with status: {}\n", status);
+                    println!("Press any key to return to the launcher...");
+                    event::read().unwrap();
+
+                    // Re-enter raw mode and UI
+                    terminal::enable_raw_mode().unwrap();
+                    execute!(stdout, terminal::EnterAlternateScreen, cursor::Hide).unwrap();
                 }
                 _ => {}
             }
         }
     }
 
-    // Clean up
+    // Final cleanup
     terminal::disable_raw_mode().unwrap();
     execute!(stdout, terminal::LeaveAlternateScreen, cursor::Show).unwrap();
 }
