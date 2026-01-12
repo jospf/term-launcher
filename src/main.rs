@@ -13,6 +13,7 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{self, ClearType},
+    style::{self, Color, Stylize},
 };
 
 fn sanitize_for_tui(s: &str) -> String {
@@ -156,34 +157,110 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
             selected = config.apps.len() - 1;
         }
 
-        // Clear screen and render menu
+        // Clear screen
         execute!(
             stdout,
             terminal::Clear(ClearType::All),
-            cursor::MoveTo(0, 0)
+            cursor::Hide
         )?;
-        writeln!(stdout, "Term Launcher (↑ ↓ Enter to launch, Ctrl+a add, Ctrl+d del, Ctrl+e edit, Ctrl+q quit)\n")?;
+
+        let (term_cols, term_rows) = terminal::size()?;
+        
+        // Calculate menu dimensions
+        // Box Width: at least 40, max 80% of screen
+        let box_width = std::cmp::max(60, (term_cols as f32 * 0.6) as u16);
+        let box_height = std::cmp::max(10, (term_rows as f32 * 0.6) as u16);
+        
+        let start_x = (term_cols.saturating_sub(box_width)) / 2;
+        let start_y = (term_rows.saturating_sub(box_height)) / 2;
+
+        // Draw Border
+        execute!(stdout, style::SetForegroundColor(Color::Blue))?;
+        // Top
+        execute!(stdout, cursor::MoveTo(start_x, start_y))?;
+        write!(stdout, "╭{}╮", "─".repeat((box_width.saturating_sub(2)) as usize))?;
+
+        // Sides
+        for i in 1..box_height.saturating_sub(1) {
+            execute!(stdout, cursor::MoveTo(start_x, start_y + i))?;
+            write!(stdout, "│{}│", " ".repeat((box_width.saturating_sub(2)) as usize))?;
+        }
+
+        // Bottom
+        execute!(stdout, cursor::MoveTo(start_x, start_y + box_height - 1))?;
+        write!(stdout, "╰{}╯", "─".repeat((box_width.saturating_sub(2)) as usize))?;
+        execute!(stdout, style::ResetColor)?;
+
+        // Title
+        let title = " Term Launcher ";
+        let title_start_x = start_x + (box_width.saturating_sub(title.len() as u16)) / 2;
+        execute!(stdout, cursor::MoveTo(title_start_x, start_y), style::SetForegroundColor(Color::Yellow), style::SetAttribute(style::Attribute::Bold))?;
+        write!(stdout, "{}", title)?;
+        execute!(stdout, style::ResetColor)?;
+
+        // Help Text (Footer)
+        let help = " Ctrl+a:Add  Ctrl+d:Del  Ctrl+e:Edit  Ctrl+q:Quit ";
+        let help_start_x = start_x + (box_width.saturating_sub(help.len() as u16)) / 2;
+        execute!(stdout, cursor::MoveTo(help_start_x, start_y + box_height - 1), style::SetForegroundColor(Color::DarkGrey))?;
+        write!(stdout, "{}", help)?;
+        execute!(stdout, style::ResetColor)?;
+
+        // Content Area
+        let content_start_y = start_y + 2;
+        let max_items = box_height.saturating_sub(4) as usize; // Check math: 2 top padding + 2 bottom padding
+
+        // Scroll logic (basic)
+        let start_index = if selected >= max_items {
+            selected - max_items + 1
+        } else {
+            0
+        };
+        let end_index = std::cmp::min(config.apps.len(), start_index + max_items);
+
+        let display_apps = &config.apps[start_index..end_index];
 
         if config.apps.is_empty() {
-             writeln!(stdout, "  No apps configured. Press 'Ctrl+a' to add one.")?;
+             let msg = "No apps configured.";
+             let msg_x = start_x + (box_width.saturating_sub(msg.len() as u16)) / 2;
+             execute!(stdout, cursor::MoveTo(msg_x, content_start_y), style::SetForegroundColor(Color::DarkGrey))?;
+             write!(stdout, "{}", msg)?;
+             execute!(stdout, style::ResetColor)?;
         }
 
-        for (i, app) in config.apps.iter().enumerate() {
-            let y = (i + 2) as u16; // Offset to avoid header
-            execute!(
-                stdout,
-                cursor::MoveTo(0, y),
-                terminal::Clear(ClearType::CurrentLine)
-            )?;
-
-            let name = sanitize_for_tui(&app.name);
-            let key = sanitize_for_tui(&app.key);
-            if i == selected {
-                write!(stdout, "> {} ({})\n", name, key)?;
-            } else {
-                write!(stdout, "  {} ({})\n", name, key)?;
+        for (i, app) in display_apps.iter().enumerate() {
+            let actual_idx = start_index + i;
+            let row = content_start_y + i as u16;
+            
+            // Format line: "  Name (Key)"
+            // Truncate if too long
+            let inner_width = box_width.saturating_sub(4);
+            let key_str = format!("({})", sanitize_for_tui(&app.key));
+            let name_str = sanitize_for_tui(&app.name);
+            
+            let mut line = format!(" {} {}", name_str, key_str);
+            if line.len() > inner_width as usize {
+                line.truncate(inner_width as usize);
             }
-        }
+
+            // Center the line within the box? Or left align with padding?
+            // "Center the programs" was requested.
+            let line_start_x = start_x + (box_width.saturating_sub(line.len() as u16)) / 2;
+
+            execute!(stdout, cursor::MoveTo(line_start_x, row))?;
+
+            if actual_idx == selected {
+                // Highlight selected row
+                let marked_line = format!("> {} <", line);
+                let marked_start_x = start_x + (box_width.saturating_sub(marked_line.len() as u16)) / 2;
+                
+                execute!(stdout, cursor::MoveTo(marked_start_x, row), style::SetForegroundColor(Color::Black), style::SetBackgroundColor(Color::Cyan))?;
+                write!(stdout, "{}", marked_line)?;
+                execute!(stdout, style::ResetColor)?;
+            } else {
+                execute!(stdout, cursor::MoveTo(line_start_x, row))?;
+                write!(stdout, "{}", line)?;
+            }
+        }    
 
         stdout.flush()?;
 
