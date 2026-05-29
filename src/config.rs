@@ -9,6 +9,7 @@ pub struct App {
     pub key: String,
     // Optional explicit arguments to avoid shell parsing
     pub args: Option<Vec<String>>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

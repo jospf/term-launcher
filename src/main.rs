@@ -13,7 +13,7 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{self, ClearType},
-    style::{self, Color, Stylize},
+    style::{self, Color},
 };
 
 fn sanitize_for_tui(s: &str) -> String {
@@ -167,42 +167,61 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
         let (term_cols, term_rows) = terminal::size()?;
         
         // Calculate menu dimensions
-        // Box Width: at least 40, max 80% of screen
-        let box_width = std::cmp::max(60, (term_cols as f32 * 0.6) as u16);
-        let box_height = std::cmp::max(10, (term_rows as f32 * 0.6) as u16);
+        // Box Width: at least 80, max 80% of screen
+        let box_width = std::cmp::max(80, (term_cols as f32 * 0.8) as u16);
+        let box_height = std::cmp::max(12, (term_rows as f32 * 0.6) as u16);
         
         let start_x = (term_cols.saturating_sub(box_width)) / 2;
         let start_y = (term_rows.saturating_sub(box_height)) / 2;
 
+        let inner_width = box_width.saturating_sub(2);
+        let left_pane_width = (inner_width as f32 * 0.55) as u16;
+        let right_pane_width = inner_width.saturating_sub(left_pane_width).saturating_sub(1);
+        let divider_x = start_x + 1 + left_pane_width;
+
         // Draw Border
         execute!(stdout, style::SetForegroundColor(Color::Blue))?;
+        
         // Top
+        let left_top_dashes = "─".repeat(left_pane_width as usize);
+        let right_top_dashes = "─".repeat(right_pane_width as usize);
         execute!(stdout, cursor::MoveTo(start_x, start_y))?;
-        write!(stdout, "╭{}╮", "─".repeat((box_width.saturating_sub(2)) as usize))?;
+        write!(stdout, "╭{}┬{}╮", left_top_dashes, right_top_dashes)?;
 
-        // Sides
+        // Sides and divider
+        let left_spaces = " ".repeat(left_pane_width as usize);
+        let right_spaces = " ".repeat(right_pane_width as usize);
         for i in 1..box_height.saturating_sub(1) {
             execute!(stdout, cursor::MoveTo(start_x, start_y + i))?;
-            write!(stdout, "│{}│", " ".repeat((box_width.saturating_sub(2)) as usize))?;
+            write!(stdout, "│{}│{}│", left_spaces, right_spaces)?;
         }
 
         // Bottom
+        let left_bottom_dashes = "─".repeat(left_pane_width as usize);
+        let right_bottom_dashes = "─".repeat(right_pane_width as usize);
         execute!(stdout, cursor::MoveTo(start_x, start_y + box_height - 1))?;
-        write!(stdout, "╰{}╯", "─".repeat((box_width.saturating_sub(2)) as usize))?;
+        write!(stdout, "╰{}┴{}╯", left_bottom_dashes, right_bottom_dashes)?;
+        
         execute!(stdout, style::ResetColor)?;
 
         // Title
         let title = " Term Launcher ";
-        let title_start_x = start_x + (box_width.saturating_sub(title.len() as u16)) / 2;
+        let title_start_x = start_x + 1 + (left_pane_width.saturating_sub(title.len() as u16)) / 2;
         execute!(stdout, cursor::MoveTo(title_start_x, start_y), style::SetForegroundColor(Color::Yellow), style::SetAttribute(style::Attribute::Bold))?;
         write!(stdout, "{}", title)?;
         execute!(stdout, style::ResetColor)?;
 
-        // Help Text (Footer)
-        let help = " Ctrl+a:Add  Ctrl+d:Del  Ctrl+e:Edit  Ctrl+q:Quit ";
-        let help_start_x = start_x + (box_width.saturating_sub(help.len() as u16)) / 2;
-        execute!(stdout, cursor::MoveTo(help_start_x, start_y + box_height - 1), style::SetForegroundColor(Color::DarkGrey))?;
-        write!(stdout, "{}", help)?;
+        // Help Text (Left bottom border)
+        let left_help = " Ctrl+a:Add  Ctrl+d:Del  Ctrl+e:Edit ";
+        let left_help_x = start_x + 1 + (left_pane_width.saturating_sub(left_help.len() as u16)) / 2;
+        execute!(stdout, cursor::MoveTo(left_help_x, start_y + box_height - 1), style::SetForegroundColor(Color::DarkGrey))?;
+        write!(stdout, "{}", left_help)?;
+        
+        // Help Text (Right bottom border)
+        let right_help = " Ctrl+q:Quit ";
+        let right_help_x = divider_x + 1 + (right_pane_width.saturating_sub(right_help.len() as u16)) / 2;
+        execute!(stdout, cursor::MoveTo(right_help_x, start_y + box_height - 1), style::SetForegroundColor(Color::DarkGrey))?;
+        write!(stdout, "{}", right_help)?;
         execute!(stdout, style::ResetColor)?;
 
         // Content Area
@@ -221,7 +240,7 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
 
         if config.apps.is_empty() {
              let msg = "No apps configured.";
-             let msg_x = start_x + (box_width.saturating_sub(msg.len() as u16)) / 2;
+             let msg_x = start_x + 1 + (left_pane_width.saturating_sub(msg.len() as u16)) / 2;
              execute!(stdout, cursor::MoveTo(msg_x, content_start_y), style::SetForegroundColor(Color::DarkGrey))?;
              write!(stdout, "{}", msg)?;
              execute!(stdout, style::ResetColor)?;
@@ -231,27 +250,23 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
             let actual_idx = start_index + i;
             let row = content_start_y + i as u16;
             
-            // Format line: "  Name (Key)"
+            // Format line: "Name (Key)"
             // Truncate if too long
-            let inner_width = box_width.saturating_sub(4);
+            let left_inner_width = left_pane_width.saturating_sub(4);
             let key_str = format!("({})", sanitize_for_tui(&app.key));
             let name_str = sanitize_for_tui(&app.name);
             
-            let mut line = format!(" {} {}", name_str, key_str);
-            if line.len() > inner_width as usize {
-                line.truncate(inner_width as usize);
+            let mut line = format!("{} {}", name_str, key_str);
+            if line.len() > left_inner_width as usize {
+                line.truncate(left_inner_width as usize);
             }
 
-            // Center the line within the box? Or left align with padding?
-            // "Center the programs" was requested.
-            let line_start_x = start_x + (box_width.saturating_sub(line.len() as u16)) / 2;
-
-            execute!(stdout, cursor::MoveTo(line_start_x, row))?;
+            let line_start_x = start_x + 1 + (left_pane_width.saturating_sub(line.len() as u16)) / 2;
 
             if actual_idx == selected {
                 // Highlight selected row
                 let marked_line = format!("> {} <", line);
-                let marked_start_x = start_x + (box_width.saturating_sub(marked_line.len() as u16)) / 2;
+                let marked_start_x = start_x + 1 + (left_pane_width.saturating_sub(marked_line.len() as u16)) / 2;
                 
                 execute!(stdout, cursor::MoveTo(marked_start_x, row), style::SetForegroundColor(Color::Black), style::SetBackgroundColor(Color::Cyan))?;
                 write!(stdout, "{}", marked_line)?;
@@ -261,6 +276,75 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
                 write!(stdout, "{}", line)?;
             }
         }    
+
+        // Draw Right Pane Details
+        if !config.apps.is_empty() {
+            let app = &config.apps[selected];
+            let right_x = divider_x + 2;
+            let inner_r_width = right_pane_width.saturating_sub(4) as usize;
+            
+            let mut r_row = content_start_y;
+
+            // 1. Draw Title (done first, before closure limits borrow access)
+            let details_title = " App Details ";
+            let details_title_x = divider_x + 1 + (right_pane_width.saturating_sub(details_title.len() as u16)) / 2;
+            execute!(stdout, cursor::MoveTo(details_title_x, start_y + 1), style::SetForegroundColor(Color::Cyan), style::SetAttribute(style::Attribute::Bold))?;
+            write!(stdout, "{}", details_title)?;
+            execute!(stdout, style::ResetColor)?;
+
+            let mut draw_detail_line = |stdout: &mut io::Stdout, label: &str, value: &str, label_color: Color, val_color: Color| -> io::Result<()> {
+                if r_row >= start_y + box_height - 1 {
+                    return Ok(());
+                }
+                execute!(stdout, cursor::MoveTo(right_x, r_row))?;
+                
+                let label_part = format!("{}: ", label);
+                let available_val_width = inner_r_width.saturating_sub(label_part.len());
+                let mut val_part = value.to_string();
+                if val_part.len() > available_val_width {
+                    val_part.truncate(available_val_width);
+                }
+                
+                execute!(stdout, style::SetForegroundColor(label_color))?;
+                write!(stdout, "{}", label_part)?;
+                execute!(stdout, style::SetForegroundColor(val_color))?;
+                write!(stdout, "{}", val_part)?;
+                execute!(stdout, style::ResetColor)?;
+                
+                r_row += 1;
+                Ok(())
+            };
+
+            // 2. Name
+            draw_detail_line(&mut stdout, "Name", &app.name, Color::Yellow, Color::White)?;
+
+            // 3. Hotkey
+            draw_detail_line(&mut stdout, "Hotkey", &app.key, Color::Yellow, Color::White)?;
+
+            // 4. Command
+            draw_detail_line(&mut stdout, "Command", &app.cmd, Color::Yellow, Color::White)?;
+
+            // 5. Resolved Path
+            let path_resolved = launcher::resolve_command(&app.cmd);
+            let (path_str, path_color) = if let Some(path) = path_resolved {
+                (path.to_string_lossy().into_owned(), Color::Green)
+            } else {
+                ("Not found / Blocked".to_string(), Color::Red)
+            };
+            draw_detail_line(&mut stdout, "Resolved", &path_str, Color::Yellow, path_color)?;
+
+            // 6. Arguments
+            let args_str = match &app.args {
+                Some(args) if !args.is_empty() => args.join(" "),
+                _ => "None".to_string(),
+            };
+            draw_detail_line(&mut stdout, "Args", &args_str, Color::Yellow, Color::White)?;
+
+            // 7. Description
+            let desc_str = app.description.as_deref().unwrap_or("No description provided");
+            let desc_color = if app.description.is_some() { Color::White } else { Color::DarkGrey };
+            draw_detail_line(&mut stdout, "Desc", desc_str, Color::Yellow, desc_color)?;
+        }
 
         stdout.flush()?;
 
@@ -307,6 +391,13 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
                     } else {
                         let cmd_input = prompt("Command: ")?;
                         if !cmd_input.is_empty() {
+                            let description_input = prompt("Description (optional): ")?;
+                            let description = if description_input.is_empty() {
+                                None
+                            } else {
+                                Some(description_input)
+                            };
+
                             let parts: Vec<&str> = cmd_input.split_whitespace().collect();
                             let cmd = parts[0].to_string();
                             let args = if parts.len() > 1 {
@@ -320,6 +411,7 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
                                 key,
                                 cmd,
                                 args,
+                                description,
                             });
                             // Sort apps alphabetically by name
                             config.apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -356,6 +448,14 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
                             
                             let new_cmd_input = prompt_with_default("Command", &full_cmd_str)?;
 
+                            let current_desc = app.description.as_deref().unwrap_or("");
+                            let new_desc_input = prompt_with_default("Description", current_desc)?;
+                            let description = if new_desc_input.is_empty() {
+                                None
+                            } else {
+                                Some(new_desc_input)
+                            };
+
                             // Validation
                             // Check if key exists (excluding THIS app's current key if it hasn't changed)
                             let key_conflict = config.apps.iter().enumerate().any(|(i, check_app)| {
@@ -382,6 +482,7 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
                                     key: new_key,
                                     cmd,
                                     args,
+                                    description,
                                 };
                                 // Sort
                                 config.apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
