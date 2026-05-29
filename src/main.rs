@@ -16,6 +16,29 @@ use crossterm::{
     style::{self, Color},
 };
 
+#[derive(Clone, Debug)]
+struct FormField {
+    label: &'static str,
+    value: String,
+    cursor_pos: usize,
+}
+
+#[derive(Clone, Debug)]
+struct FormState {
+    title: &'static str,
+    fields: Vec<FormField>,
+    active_field: usize,
+    error_message: Option<String>,
+    is_edit: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum ModalState {
+    None,
+    Form,
+    DeleteConfirm,
+}
+
 fn sanitize_for_tui(s: &str) -> String {
     s.chars().filter(|c| !c.is_control()).collect()
 }
@@ -37,26 +60,6 @@ impl Drop for TerminalGuard {
     }
 }
 
-fn prompt(message: &str) -> io::Result<String> {
-    print!("{}", message);
-    io::stdout().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    Ok(input.trim().to_string())
-}
-
-fn prompt_with_default(label: &str, default: &str) -> io::Result<String> {
-    print!("{} [{}]: ", label, default);
-    io::stdout().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let result = input.trim().to_string();
-    if result.is_empty() {
-        Ok(default.to_string())
-    } else {
-        Ok(result)
-    }
-}
 
 fn pause_with_message(msg: &str) -> io::Result<()> {
     println!("{}", msg);
@@ -151,10 +154,25 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
     let mut stdout = stdout();
     let mut selected = 0;
 
+    let mut modal_state = ModalState::None;
+    let mut active_form: Option<FormState> = None;
+
+    let mut search_query = String::new();
+    let mut search_active = false;
+    let mut search_cursor_pos = 0;
+
     loop {
+        // Filter apps dynamically
+        let filtered_apps: Vec<&App> = config.apps.iter()
+            .filter(|app| {
+                search_query.is_empty() || 
+                app.name.to_lowercase().contains(&search_query.to_lowercase())
+            })
+            .collect();
+
         // Clamp selected
-        if !config.apps.is_empty() && selected >= config.apps.len() {
-            selected = config.apps.len() - 1;
+        if !filtered_apps.is_empty() && selected >= filtered_apps.len() {
+            selected = filtered_apps.len() - 1;
         }
 
         // Clear screen
@@ -188,7 +206,7 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
         execute!(stdout, cursor::MoveTo(start_x, start_y))?;
         write!(stdout, "╭{}┬{}╮", left_top_dashes, right_top_dashes)?;
 
-        // Sides and divider
+        // Sides and divider background
         let left_spaces = " ".repeat(left_pane_width as usize);
         let right_spaces = " ".repeat(right_pane_width as usize);
         for i in 1..box_height.saturating_sub(1) {
@@ -211,6 +229,12 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
         write!(stdout, "{}", title)?;
         execute!(stdout, style::ResetColor)?;
 
+        // Draw horizontal divider under search bar
+        execute!(stdout, style::SetForegroundColor(Color::Blue))?;
+        execute!(stdout, cursor::MoveTo(start_x, start_y + 3))?;
+        write!(stdout, "├{}┼", "─".repeat(left_pane_width as usize))?;
+        execute!(stdout, style::ResetColor)?;
+
         // Help Text (Left bottom border)
         let left_help = " Ctrl+a:Add  Ctrl+d:Del  Ctrl+e:Edit ";
         let left_help_x = start_x + 1 + (left_pane_width.saturating_sub(left_help.len() as u16)) / 2;
@@ -224,9 +248,49 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
         write!(stdout, "{}", right_help)?;
         execute!(stdout, style::ResetColor)?;
 
-        // Content Area
-        let content_start_y = start_y + 2;
-        let max_items = box_height.saturating_sub(4) as usize; // Check math: 2 top padding + 2 bottom padding
+        // Draw Search Bar
+        let search_label = " 🔎 Search: ";
+        let search_y = start_y + 2;
+        execute!(stdout, cursor::MoveTo(start_x + 2, search_y))?;
+        if search_active {
+            execute!(stdout, style::SetForegroundColor(Color::Cyan), style::SetAttribute(style::Attribute::Bold))?;
+        } else {
+            execute!(stdout, style::SetForegroundColor(Color::Yellow))?;
+        }
+        write!(stdout, "{}", search_label)?;
+        execute!(stdout, style::ResetColor)?;
+
+        // Search Input box
+        execute!(stdout, cursor::MoveTo(start_x + 12, search_y))?;
+        if search_active {
+            execute!(stdout, style::SetForegroundColor(Color::Cyan))?;
+        } else {
+            execute!(stdout, style::SetForegroundColor(Color::DarkGrey))?;
+        }
+        write!(stdout, "[")?;
+        
+        execute!(stdout, cursor::MoveTo(start_x + 13, search_y), style::SetForegroundColor(Color::White))?;
+        let search_inner_width = left_pane_width.saturating_sub(15);
+        let mut display_search = search_query.clone();
+        if display_search.len() > search_inner_width as usize {
+            display_search.truncate(search_inner_width as usize);
+        }
+        write!(stdout, "{}", display_search)?;
+        // Pad spaces
+        let spaces = search_inner_width.saturating_sub(display_search.len() as u16);
+        write!(stdout, "{}", " ".repeat(spaces as usize))?;
+
+        if search_active {
+            execute!(stdout, style::SetForegroundColor(Color::Cyan))?;
+        } else {
+            execute!(stdout, style::SetForegroundColor(Color::DarkGrey))?;
+        }
+        write!(stdout, "]")?;
+        execute!(stdout, style::ResetColor)?;
+
+        // Content Area (List starts below search divider)
+        let content_start_y = start_y + 4;
+        let max_items = box_height.saturating_sub(6) as usize;
 
         // Scroll logic (basic)
         let start_index = if selected >= max_items {
@@ -234,12 +298,12 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
         } else {
             0
         };
-        let end_index = std::cmp::min(config.apps.len(), start_index + max_items);
+        let end_index = std::cmp::min(filtered_apps.len(), start_index + max_items);
 
-        let display_apps = &config.apps[start_index..end_index];
+        let display_apps = &filtered_apps[start_index..end_index];
 
-        if config.apps.is_empty() {
-             let msg = "No apps configured.";
+        if filtered_apps.is_empty() {
+             let msg = "No apps found.";
              let msg_x = start_x + 1 + (left_pane_width.saturating_sub(msg.len() as u16)) / 2;
              execute!(stdout, cursor::MoveTo(msg_x, content_start_y), style::SetForegroundColor(Color::DarkGrey))?;
              write!(stdout, "{}", msg)?;
@@ -250,21 +314,15 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
             let actual_idx = start_index + i;
             let row = content_start_y + i as u16;
             
-            // Format line: "Name (Key)"
-            // Truncate if too long
-            let left_inner_width = left_pane_width.saturating_sub(4);
+            // Format name and key
             let key_str = format!("({})", sanitize_for_tui(&app.key));
             let name_str = sanitize_for_tui(&app.name);
             
-            let mut line = format!("{} {}", name_str, key_str);
-            if line.len() > left_inner_width as usize {
-                line.truncate(left_inner_width as usize);
-            }
-
-            let line_start_x = start_x + 1 + (left_pane_width.saturating_sub(line.len() as u16)) / 2;
-
+            let line_start_x = start_x + 1 + (left_pane_width.saturating_sub((name_str.len() + 1 + key_str.len()) as u16)) / 2;
+            
             if actual_idx == selected {
-                // Highlight selected row
+                // Selected: highlight with cyan background
+                let line = format!("{} {}", name_str, key_str);
                 let marked_line = format!("> {} <", line);
                 let marked_start_x = start_x + 1 + (left_pane_width.saturating_sub(marked_line.len() as u16)) / 2;
                 
@@ -272,20 +330,47 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
                 write!(stdout, "{}", marked_line)?;
                 execute!(stdout, style::ResetColor)?;
             } else {
+                // Not selected: substring highlight
                 execute!(stdout, cursor::MoveTo(line_start_x, row))?;
-                write!(stdout, "{}", line)?;
+                let mut match_found = false;
+                if !search_query.is_empty() {
+                    if let Some(pos) = name_str.to_lowercase().find(&search_query.to_lowercase()) {
+                        match_found = true;
+                        let prefix = &name_str[..pos];
+                        let matched = &name_str[pos..pos + search_query.len()];
+                        let suffix = &name_str[pos + search_query.len()..];
+
+                        execute!(stdout, style::SetForegroundColor(Color::White))?;
+                        write!(stdout, "{}", prefix)?;
+                        
+                        execute!(stdout, style::SetForegroundColor(Color::Magenta), style::SetAttribute(style::Attribute::Bold))?;
+                        write!(stdout, "{}", matched)?;
+                        
+                        execute!(stdout, style::SetForegroundColor(Color::White), style::SetAttribute(style::Attribute::Reset))?;
+                        write!(stdout, "{}", suffix)?;
+                    }
+                }
+                
+                if !match_found {
+                    execute!(stdout, style::SetForegroundColor(Color::White))?;
+                    write!(stdout, "{}", name_str)?;
+                }
+
+                execute!(stdout, style::SetForegroundColor(Color::DarkGrey))?;
+                write!(stdout, " {}", key_str)?;
+                execute!(stdout, style::ResetColor)?;
             }
         }    
 
         // Draw Right Pane Details
-        if !config.apps.is_empty() {
-            let app = &config.apps[selected];
+        if !filtered_apps.is_empty() {
+            let app = filtered_apps[selected];
             let right_x = divider_x + 2;
             let inner_r_width = right_pane_width.saturating_sub(4) as usize;
             
             let mut r_row = content_start_y;
 
-            // 1. Draw Title (done first, before closure limits borrow access)
+            // 1. Draw Title
             let details_title = " App Details ";
             let details_title_x = divider_x + 1 + (right_pane_width.saturating_sub(details_title.len() as u16)) / 2;
             execute!(stdout, cursor::MoveTo(details_title_x, start_y + 1), style::SetForegroundColor(Color::Cyan), style::SetAttribute(style::Attribute::Bold))?;
@@ -346,178 +431,439 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
             draw_detail_line(&mut stdout, "Desc", desc_str, Color::Yellow, desc_color)?;
         }
 
+        // Draw Form Modal Overlay
+        if modal_state == ModalState::Form {
+            if let Some(ref form) = active_form {
+                let modal_width = 60;
+                let modal_height = 14;
+                let modal_x = (term_cols.saturating_sub(modal_width)) / 2;
+                let modal_y = (term_rows.saturating_sub(modal_height)) / 2;
+
+                execute!(stdout, style::SetForegroundColor(Color::Magenta))?;
+                
+                // Top
+                let title_bar = format!(" {} ", form.title);
+                let dash_len = (modal_width as usize - 2 - title_bar.len()) / 2;
+                let left_dashes = "═".repeat(dash_len);
+                let right_dashes = "═".repeat(modal_width as usize - 2 - title_bar.len() - dash_len);
+                execute!(stdout, cursor::MoveTo(modal_x, modal_y))?;
+                write!(stdout, "╔{}{}{}╗", left_dashes, title_bar, right_dashes)?;
+
+                // Sides
+                for r in 1..modal_height - 1 {
+                    execute!(stdout, cursor::MoveTo(modal_x, modal_y + r))?;
+                    write!(stdout, "║{}║", " ".repeat((modal_width - 2) as usize))?;
+                }
+
+                // Bottom
+                execute!(stdout, cursor::MoveTo(modal_x, modal_y + modal_height - 1))?;
+                write!(stdout, "╚{}╝", "═".repeat((modal_width - 2) as usize))?;
+                execute!(stdout, style::ResetColor)?;
+
+                // Draw fields
+                for (idx, field) in form.fields.iter().enumerate() {
+                    let field_y = modal_y + 3 + (2 * idx) as u16;
+                    
+                    // Label
+                    execute!(stdout, cursor::MoveTo(modal_x + 3, field_y))?;
+                    if idx == form.active_field {
+                        execute!(stdout, style::SetForegroundColor(Color::Cyan), style::SetAttribute(style::Attribute::Bold))?;
+                    } else {
+                        execute!(stdout, style::SetForegroundColor(Color::Yellow))?;
+                    }
+                    write!(stdout, "{:11}", field.label)?;
+                    execute!(stdout, style::ResetColor)?;
+
+                    // Input bracket
+                    execute!(stdout, cursor::MoveTo(modal_x + 15, field_y))?;
+                    if idx == form.active_field {
+                        execute!(stdout, style::SetForegroundColor(Color::Cyan))?;
+                    } else {
+                        execute!(stdout, style::SetForegroundColor(Color::DarkGrey))?;
+                    }
+                    write!(stdout, "[")?;
+                    
+                    // Value
+                    execute!(stdout, cursor::MoveTo(modal_x + 16, field_y), style::SetForegroundColor(Color::White))?;
+                    let val_limit = 39;
+                    let mut display_val = field.value.clone();
+                    if display_val.len() > val_limit {
+                        display_val.truncate(val_limit);
+                    }
+                    write!(stdout, "{}", display_val)?;
+
+                    // Fill remaining input box space
+                    let spaces = val_limit.saturating_sub(display_val.len());
+                    write!(stdout, "{}", " ".repeat(spaces))?;
+
+                    // Close bracket
+                    if idx == form.active_field {
+                        execute!(stdout, style::SetForegroundColor(Color::Cyan))?;
+                    } else {
+                        execute!(stdout, style::SetForegroundColor(Color::DarkGrey))?;
+                    }
+                    write!(stdout, "]")?;
+                    execute!(stdout, style::ResetColor)?;
+                }
+
+                // Draw buttons/help in modal
+                let form_help = " [Enter] Save   [Esc] Cancel   [Tab] Next ";
+                let form_help_x = modal_x + (modal_width.saturating_sub(form_help.len() as u16)) / 2;
+                execute!(stdout, cursor::MoveTo(form_help_x, modal_y + 11), style::SetForegroundColor(Color::DarkGrey))?;
+                write!(stdout, "{}", form_help)?;
+                execute!(stdout, style::ResetColor)?;
+
+                // Draw error message if any
+                if let Some(ref err) = form.error_message {
+                    let err_display = format!("Error: {}", err);
+                    let err_x = modal_x + (modal_width.saturating_sub(err_display.len() as u16)) / 2;
+                    execute!(stdout, cursor::MoveTo(err_x, modal_y + 12), style::SetForegroundColor(Color::Red), style::SetAttribute(style::Attribute::Bold))?;
+                    write!(stdout, "{}", err_display)?;
+                    execute!(stdout, style::ResetColor)?;
+                }
+            }
+        }
+
+        // Draw Delete Confirmation Modal Overlay
+        if modal_state == ModalState::DeleteConfirm {
+            if !filtered_apps.is_empty() {
+                let app = filtered_apps[selected];
+                let modal_width = 50;
+                let modal_height = 8;
+                let modal_x = (term_cols.saturating_sub(modal_width)) / 2;
+                let modal_y = (term_rows.saturating_sub(modal_height)) / 2;
+
+                execute!(stdout, style::SetForegroundColor(Color::Red))?;
+                
+                // Top
+                let title = " Confirm Delete ";
+                let dash_len = (modal_width as usize - 2 - title.len()) / 2;
+                let left_dashes = "═".repeat(dash_len);
+                let right_dashes = "═".repeat(modal_width as usize - 2 - title.len() - dash_len);
+                execute!(stdout, cursor::MoveTo(modal_x, modal_y))?;
+                write!(stdout, "╔{}{}{}╗", left_dashes, title, right_dashes)?;
+
+                // Sides
+                for r in 1..modal_height - 1 {
+                    execute!(stdout, cursor::MoveTo(modal_x, modal_y + r))?;
+                    write!(stdout, "║{}║", " ".repeat((modal_width - 2) as usize))?;
+                }
+
+                // Bottom
+                execute!(stdout, cursor::MoveTo(modal_x, modal_y + modal_height - 1))?;
+                write!(stdout, "╚{}╝", "═".repeat((modal_width - 2) as usize))?;
+                execute!(stdout, style::ResetColor)?;
+
+                // Message
+                let msg1 = "Are you sure you want to delete";
+                let msg2 = format!("'{}'?", app.name);
+                let msg1_x = modal_x + (modal_width.saturating_sub(msg1.len() as u16)) / 2;
+                let msg2_x = modal_x + (modal_width.saturating_sub(msg2.len() as u16)) / 2;
+                
+                execute!(stdout, cursor::MoveTo(msg1_x, modal_y + 2), style::SetForegroundColor(Color::White))?;
+                write!(stdout, "{}", msg1)?;
+                execute!(stdout, cursor::MoveTo(msg2_x, modal_y + 3), style::SetForegroundColor(Color::Yellow))?;
+                write!(stdout, "{}", msg2)?;
+
+                // Buttons
+                let btn_help = " [y] Yes      [n/Esc] No ";
+                let btn_x = modal_x + (modal_width.saturating_sub(btn_help.len() as u16)) / 2;
+                execute!(stdout, cursor::MoveTo(btn_x, modal_y + 5), style::SetForegroundColor(Color::White))?;
+                write!(stdout, "{}", btn_help)?;
+                execute!(stdout, style::ResetColor)?;
+            }
+        }
+
+        // Show/Hide Caret Cursor dynamically
+        let mut show_cursor = false;
+        let mut cursor_x = 0;
+        let mut cursor_y = 0;
+
+        if search_active {
+            show_cursor = true;
+            cursor_x = start_x + 13 + search_cursor_pos as u16;
+            cursor_y = start_y + 2;
+        } else if modal_state == ModalState::Form {
+            if let Some(ref form) = active_form {
+                show_cursor = true;
+                let modal_width = 60;
+                let modal_x = (term_cols.saturating_sub(modal_width)) / 2;
+                let modal_y = (term_rows.saturating_sub(14)) / 2;
+                
+                cursor_y = modal_y + 3 + (2 * form.active_field) as u16;
+                let active_field_state = &form.fields[form.active_field];
+                cursor_x = modal_x + 16 + active_field_state.cursor_pos as u16;
+            }
+        }
+
+        if show_cursor {
+            execute!(stdout, cursor::MoveTo(cursor_x, cursor_y), cursor::Show)?;
+        } else {
+            execute!(stdout, cursor::Hide)?;
+        }
+
         stdout.flush()?;
 
         // Handle key events
         if let Event::Key(key_event) = event::read()? {
-            match (key_event.code, key_event.modifiers) {
-                (KeyCode::Char('q'), KeyModifiers::CONTROL) => return Ok(()),
-                (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
-                    if !config.apps.is_empty() {
-                        // Confirmation Step
-                        terminal::disable_raw_mode()?;
-                        execute!(stdout, terminal::LeaveAlternateScreen, cursor::Show)?;
-
-                        let app_name = &config.apps[selected].name;
-                        let answer = prompt(&format!("Are you sure you want to delete '{}'? (y/N): ", app_name))?;
-                        
-                        if answer.eq_ignore_ascii_case("y") {
-                            config.apps.remove(selected);
-                            config.save(&config_path)?;
-                        }
-
-                        // Restore
-                        terminal::enable_raw_mode()?;
-                        execute!(stdout, terminal::EnterAlternateScreen, cursor::Hide)?;
-                    }
-                }
-                (KeyCode::Char('a'), KeyModifiers::CONTROL) => {
-                    // Temporarily leave TUI
-                    terminal::disable_raw_mode()?;
-                    execute!(stdout, terminal::LeaveAlternateScreen, cursor::Show)?;
-
-                    println!("\n--- Add New App ---");
-                    let name = prompt("Name: ")?;
-                    let key = prompt("Key: ")?;
-
-                    // Validation
-                    // Note: We no longer have reserved single-char keys!
-                    let key_exists = config.apps.iter().any(|app| app.key == key);
-
-                    if key_exists {
-                        pause_with_message(&format!("Error: Key '{}' is already in use by another app.", key))?;
-                    } else if name.is_empty() || key.is_empty() {
-                        pause_with_message("Error: Name and Key cannot be empty.")?;
-                    } else {
-                        let cmd_input = prompt("Command: ")?;
-                        if !cmd_input.is_empty() {
-                            let description_input = prompt("Description (optional): ")?;
-                            let description = if description_input.is_empty() {
-                                None
-                            } else {
-                                Some(description_input)
-                            };
-
-                            let parts: Vec<&str> = cmd_input.split_whitespace().collect();
-                            let cmd = parts[0].to_string();
-                            let args = if parts.len() > 1 {
-                                Some(parts[1..].iter().map(|s| s.to_string()).collect())
-                            } else {
-                                None
-                            };
-
-                            config.apps.push(App {
-                                name,
-                                key,
-                                cmd,
-                                args,
-                                description,
-                            });
-                            // Sort apps alphabetically by name
-                            config.apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-                            config.save(&config_path)?;
-                        }
-                    }
-
-                    // Restore TUI
-                    terminal::enable_raw_mode()?;
-                    execute!(stdout, terminal::EnterAlternateScreen, cursor::Hide)?;
-                }
-                (KeyCode::Char('e'), KeyModifiers::CONTROL) => {
-                     if !config.apps.is_empty() {
-                        // Temporarily leave TUI
-                        terminal::disable_raw_mode()?;
-                        execute!(stdout, terminal::LeaveAlternateScreen, cursor::Show)?;
-
-                        {
-                            let app = &config.apps[selected];
-                            println!("\n--- Edit App (Press Enter to keep current value) ---");
-                            
-                            // 1. Name
-                            let new_name = prompt_with_default("Name", &app.name)?;
-                            
-                            // 2. Key
-                            let new_key = prompt_with_default("Key", &app.key)?;
-                            
-                            // 3. Command
-                            let mut full_cmd_str = app.cmd.clone();
-                            if let Some(args) = &app.args {
-                                full_cmd_str.push_str(" ");
-                                full_cmd_str.push_str(&args.join(" "));
+            match modal_state {
+                ModalState::DeleteConfirm => {
+                    match key_event.code {
+                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                            if !filtered_apps.is_empty() {
+                                let app_to_delete = filtered_apps[selected];
+                                if let Some(idx) = config.apps.iter().position(|a| a.name == app_to_delete.name && a.key == app_to_delete.key) {
+                                    config.apps.remove(idx);
+                                    let _ = config.save(&config_path);
+                                }
                             }
-                            
-                            let new_cmd_input = prompt_with_default("Command", &full_cmd_str)?;
+                            modal_state = ModalState::None;
+                        }
+                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                            modal_state = ModalState::None;
+                        }
+                        _ => {}
+                    }
+                }
+                ModalState::Form => {
+                    if let Some(ref mut form) = active_form {
+                        match key_event.code {
+                            KeyCode::Esc => {
+                                modal_state = ModalState::None;
+                                active_form = None;
+                            }
+                            KeyCode::Tab | KeyCode::Down => {
+                                form.active_field = (form.active_field + 1) % form.fields.len();
+                            }
+                            KeyCode::BackTab | KeyCode::Up => {
+                                form.active_field = (form.active_field + form.fields.len() - 1) % form.fields.len();
+                            }
+                            KeyCode::Left => {
+                                let field = &mut form.fields[form.active_field];
+                                if field.cursor_pos > 0 {
+                                    field.cursor_pos -= 1;
+                                }
+                            }
+                            KeyCode::Right => {
+                                let field = &mut form.fields[form.active_field];
+                                if field.cursor_pos < field.value.len() {
+                                    field.cursor_pos += 1;
+                                }
+                            }
+                            KeyCode::Backspace => {
+                                let field = &mut form.fields[form.active_field];
+                                if field.cursor_pos > 0 {
+                                    field.value.remove(field.cursor_pos - 1);
+                                    field.cursor_pos -= 1;
+                                }
+                            }
+                            KeyCode::Delete => {
+                                let field = &mut form.fields[form.active_field];
+                                if field.cursor_pos < field.value.len() {
+                                    field.value.remove(field.cursor_pos);
+                                }
+                            }
+                            KeyCode::Char(c) => {
+                                let field = &mut form.fields[form.active_field];
+                                if field.value.len() < 39 {
+                                    field.value.insert(field.cursor_pos, c);
+                                    field.cursor_pos += 1;
+                                }
+                            }
+                            KeyCode::Enter => {
+                                let name = form.fields[0].value.trim().to_string();
+                                let key = form.fields[1].value.trim().to_string();
+                                let cmd_input = form.fields[2].value.trim().to_string();
+                                let desc_input = form.fields[3].value.trim().to_string();
 
-                            let current_desc = app.description.as_deref().unwrap_or("");
-                            let new_desc_input = prompt_with_default("Description", current_desc)?;
-                            let description = if new_desc_input.is_empty() {
-                                None
-                            } else {
-                                Some(new_desc_input)
-                            };
-
-                            // Validation
-                            // Check if key exists (excluding THIS app's current key if it hasn't changed)
-                            let key_conflict = config.apps.iter().enumerate().any(|(i, check_app)| {
-                                i != selected && check_app.key == new_key
-                            });
-
-                            if key_conflict {
-                                pause_with_message(&format!("Error: Key '{}' is already in use by another app.", new_key))?;
-                            } else if new_name.is_empty() || new_key.is_empty() || new_cmd_input.is_empty() {
-                                pause_with_message("Error: Fields cannot be empty.")?;
-                            } else {
-                                // Parse the new command string
-                                let parts: Vec<&str> = new_cmd_input.split_whitespace().collect();
-                                let cmd = parts[0].to_string();
-                                let args = if parts.len() > 1 {
-                                    Some(parts[1..].iter().map(|s| s.to_string()).collect())
+                                if name.is_empty() || key.is_empty() {
+                                    form.error_message = Some("Name and Key cannot be empty.".to_string());
+                                } else if cmd_input.is_empty() {
+                                    form.error_message = Some("Command cannot be empty.".to_string());
                                 } else {
-                                    None
-                                };
+                                    let mut key_conflict = false;
+                                    if form.is_edit {
+                                        if !filtered_apps.is_empty() {
+                                            let current_app = filtered_apps[selected];
+                                            key_conflict = config.apps.iter().any(|app| {
+                                                app.key == key && (app.name != current_app.name || app.key != current_app.key)
+                                            });
+                                        }
+                                    } else {
+                                        key_conflict = config.apps.iter().any(|app| app.key == key);
+                                    }
 
-                                // Update
-                                config.apps[selected] = App {
-                                    name: new_name,
-                                    key: new_key,
-                                    cmd,
-                                    args,
-                                    description,
-                                };
-                                // Sort
-                                config.apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-                                config.save(&config_path)?;
+                                    if key_conflict {
+                                        form.error_message = Some(format!("Key '{}' is already in use.", key));
+                                    } else {
+                                        let parts: Vec<&str> = cmd_input.split_whitespace().collect();
+                                        let cmd = parts[0].to_string();
+                                        let args = if parts.len() > 1 {
+                                            Some(parts[1..].iter().map(|s| s.to_string()).collect())
+                                        } else {
+                                            None
+                                        };
+
+                                        let description = if desc_input.is_empty() {
+                                            None
+                                        } else {
+                                            Some(desc_input)
+                                        };
+
+                                        if form.is_edit {
+                                            if !filtered_apps.is_empty() {
+                                                let current_app = filtered_apps[selected];
+                                                if let Some(idx) = config.apps.iter().position(|a| a.name == current_app.name && a.key == current_app.key) {
+                                                    config.apps[idx] = App {
+                                                        name,
+                                                        key,
+                                                        cmd,
+                                                        args,
+                                                        description,
+                                                    };
+                                                }
+                                            }
+                                        } else {
+                                            config.apps.push(App {
+                                                name,
+                                                key,
+                                                cmd,
+                                                args,
+                                                description,
+                                            });
+                                        }
+
+                                        config.apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                                        if let Err(e) = config.save(&config_path) {
+                                            form.error_message = Some(format!("Failed to save: {}", e));
+                                        } else {
+                                            modal_state = ModalState::None;
+                                            active_form = None;
+                                        }
+                                    }
+                                }
                             }
+                            _ => {}
                         }
-
-                        // Restore TUI
-                        terminal::enable_raw_mode()?;
-                        execute!(stdout, terminal::EnterAlternateScreen, cursor::Hide)?;
                     }
                 }
-                (KeyCode::Up, _) => {
-                    if selected > 0 {
-                        selected -= 1;
+                ModalState::None => {
+                    if search_active {
+                        match key_event.code {
+                            KeyCode::Esc => {
+                                search_active = false;
+                                search_query.clear();
+                                search_cursor_pos = 0;
+                            }
+                            KeyCode::Enter | KeyCode::Down | KeyCode::Tab => {
+                                search_active = false;
+                            }
+                            KeyCode::Left => {
+                                if search_cursor_pos > 0 {
+                                    search_cursor_pos -= 1;
+                                }
+                            }
+                            KeyCode::Right => {
+                                if search_cursor_pos < search_query.len() {
+                                    search_cursor_pos += 1;
+                                }
+                            }
+                            KeyCode::Backspace => {
+                                if search_cursor_pos > 0 {
+                                    search_query.remove(search_cursor_pos - 1);
+                                    search_cursor_pos -= 1;
+                                }
+                            }
+                            KeyCode::Delete => {
+                                if search_cursor_pos < search_query.len() {
+                                    search_query.remove(search_cursor_pos);
+                                }
+                            }
+                            KeyCode::Char(c) => {
+                                search_query.insert(search_cursor_pos, c);
+                                search_cursor_pos += 1;
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        match (key_event.code, key_event.modifiers) {
+                            (KeyCode::Char('q'), KeyModifiers::CONTROL) => return Ok(()),
+                            (KeyCode::Char('/'), KeyModifiers::NONE) => {
+                                search_active = true;
+                                search_cursor_pos = search_query.len();
+                            }
+                            (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
+                                if !filtered_apps.is_empty() {
+                                    modal_state = ModalState::DeleteConfirm;
+                                }
+                            }
+                            (KeyCode::Char('a'), KeyModifiers::CONTROL) => {
+                                modal_state = ModalState::Form;
+                                active_form = Some(FormState {
+                                    title: "Add New Application",
+                                    fields: vec![
+                                        FormField { label: "Name", value: String::new(), cursor_pos: 0 },
+                                        FormField { label: "Hotkey", value: String::new(), cursor_pos: 0 },
+                                        FormField { label: "Command", value: String::new(), cursor_pos: 0 },
+                                        FormField { label: "Description", value: String::new(), cursor_pos: 0 },
+                                    ],
+                                    active_field: 0,
+                                    error_message: None,
+                                    is_edit: false,
+                                });
+                            }
+                            (KeyCode::Char('e'), KeyModifiers::CONTROL) => {
+                                if !filtered_apps.is_empty() {
+                                    let app = filtered_apps[selected];
+                                    let mut full_cmd_str = app.cmd.clone();
+                                    if let Some(args) = &app.args {
+                                        full_cmd_str.push_str(" ");
+                                        full_cmd_str.push_str(&args.join(" "));
+                                    }
+                                    let current_desc = app.description.clone().unwrap_or_default();
+                                    
+                                    modal_state = ModalState::Form;
+                                    active_form = Some(FormState {
+                                        title: "Edit Application",
+                                        fields: vec![
+                                            FormField { label: "Name", value: app.name.clone(), cursor_pos: app.name.len() },
+                                            FormField { label: "Hotkey", value: app.key.clone(), cursor_pos: app.key.len() },
+                                            FormField { label: "Command", value: full_cmd_str.clone(), cursor_pos: full_cmd_str.len() },
+                                            FormField { label: "Description", value: current_desc.clone(), cursor_pos: current_desc.len() },
+                                        ],
+                                        active_field: 0,
+                                        error_message: None,
+                                        is_edit: true,
+                                    });
+                                }
+                            }
+                            (KeyCode::Up, _) => {
+                                if selected > 0 {
+                                    selected -= 1;
+                                }
+                            }
+                            (KeyCode::Down, _) => {
+                                if !filtered_apps.is_empty() {
+                                    if selected + 1 < filtered_apps.len() {
+                                        selected += 1;
+                                    }
+                                }
+                            }
+                            (KeyCode::Enter, _) => {
+                                if !filtered_apps.is_empty() {
+                                    let app = filtered_apps[selected];
+                                    launch_app(app)?;
+                                }
+                            }
+                            (KeyCode::Char(c), KeyModifiers::NONE) | (KeyCode::Char(c), KeyModifiers::SHIFT) => {
+                                if let Some(app) = config.apps.iter().find(|a| a.key == c.to_string()) {
+                                    launch_app(app)?;
+                                }
+                            }
+                            _ => {}
+                        }
                     }
                 }
-                (KeyCode::Down, _) => {
-                    if !config.apps.is_empty() {
-                        if selected + 1 < config.apps.len() { selected += 1; }
-                    }
-                }
-                (KeyCode::Enter, _) => {
-                    if !config.apps.is_empty() {
-                        let app = &config.apps[selected];
-                        launch_app(app)?;
-                    }
-                }
-                (KeyCode::Char(c), KeyModifiers::NONE) | (KeyCode::Char(c), KeyModifiers::SHIFT) => {
-                    // Check if any app has this key
-                    if let Some(app) = config.apps.iter().find(|a| a.key == c.to_string()) {
-                         launch_app(app)?;
-                    }
-                }
-                _ => {}
             }
         }
     }
