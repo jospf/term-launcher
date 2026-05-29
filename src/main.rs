@@ -37,6 +37,7 @@ enum ModalState {
     None,
     Form,
     DeleteConfirm,
+    ThemeSelect,
 }
 
 fn parse_color(s: &str) -> Color {
@@ -60,6 +61,24 @@ fn parse_color(s: &str) -> Color {
         _ => Color::Reset,
     }
 }
+
+struct PredefinedTheme {
+    name: &'static str,
+    border_color: &'static str,
+    accent_color: &'static str,
+    text_color: &'static str,
+    dim_color: &'static str,
+}
+
+const PREDEFINED_THEMES: &[PredefinedTheme] = &[
+    PredefinedTheme { name: "Default Blue", border_color: "blue", accent_color: "cyan", text_color: "white", dim_color: "dark_grey" },
+    PredefinedTheme { name: "Cyberpunk Neon", border_color: "cyan", accent_color: "magenta", text_color: "white", dim_color: "grey" },
+    PredefinedTheme { name: "Nordic Frost", border_color: "dark_cyan", accent_color: "cyan", text_color: "grey", dim_color: "dark_grey" },
+    PredefinedTheme { name: "Gruvbox Autumn", border_color: "dark_yellow", accent_color: "yellow", text_color: "white", dim_color: "grey" },
+    PredefinedTheme { name: "Dracula Night", border_color: "dark_magenta", accent_color: "magenta", text_color: "white", dim_color: "dark_grey" },
+    PredefinedTheme { name: "Matrix Terminal", border_color: "dark_green", accent_color: "green", text_color: "green", dim_color: "dark_grey" },
+    PredefinedTheme { name: "Sunset Crimson", border_color: "dark_red", accent_color: "red", text_color: "white", dim_color: "dark_grey" },
+];
 
 struct ActiveTheme {
     border: Color,
@@ -100,7 +119,6 @@ impl Drop for TerminalGuard {
         let _ = execute!(stdout(), terminal::LeaveAlternateScreen, cursor::Show);
     }
 }
-
 
 fn pause_with_message(msg: &str) -> io::Result<()> {
     println!("{}", msg);
@@ -197,12 +215,15 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
 
     let mut modal_state = ModalState::None;
     let mut active_form: Option<FormState> = None;
+    let mut selected_theme_idx = 0;
 
     let mut search_query = String::new();
     let mut search_active = false;
     let mut search_cursor_pos = 0;
 
     loop {
+        let active_theme = ActiveTheme::from_config(&config);
+
         // Filter apps dynamically
         let filtered_apps: Vec<&App> = config.apps.iter()
             .filter(|app| {
@@ -239,7 +260,7 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
         let divider_x = start_x + 1 + left_pane_width;
 
         // Draw Border
-        execute!(stdout, style::SetForegroundColor(Color::Blue))?;
+        execute!(stdout, style::SetForegroundColor(active_theme.border))?;
         
         // Top
         let left_top_dashes = "─".repeat(left_pane_width as usize);
@@ -266,12 +287,12 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
         // Title
         let title = " Term Launcher ";
         let title_start_x = start_x + 1 + (left_pane_width.saturating_sub(title.len() as u16)) / 2;
-        execute!(stdout, cursor::MoveTo(title_start_x, start_y), style::SetForegroundColor(Color::Yellow), style::SetAttribute(style::Attribute::Bold))?;
+        execute!(stdout, cursor::MoveTo(title_start_x, start_y), style::SetForegroundColor(active_theme.title), style::SetAttribute(style::Attribute::Bold))?;
         write!(stdout, "{}", title)?;
         execute!(stdout, style::ResetColor)?;
 
         // Draw horizontal divider under search bar
-        execute!(stdout, style::SetForegroundColor(Color::Blue))?;
+        execute!(stdout, style::SetForegroundColor(active_theme.border))?;
         execute!(stdout, cursor::MoveTo(start_x, start_y + 3))?;
         write!(stdout, "├{}┼", "─".repeat(left_pane_width as usize))?;
         execute!(stdout, style::ResetColor)?;
@@ -279,13 +300,13 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
         // Help Text (Left bottom border)
         let left_help = " Ctrl+a:Add  Ctrl+d:Del  Ctrl+e:Edit  /:Search ";
         let left_help_x = start_x + 1 + (left_pane_width.saturating_sub(left_help.len() as u16)) / 2;
-        execute!(stdout, cursor::MoveTo(left_help_x, start_y + box_height - 1), style::SetForegroundColor(Color::DarkGrey))?;
+        execute!(stdout, cursor::MoveTo(left_help_x, start_y + box_height - 1), style::SetForegroundColor(active_theme.dim))?;
         write!(stdout, "{}", left_help)?;
         
         // Help Text (Right bottom border)
-        let right_help = " Ctrl+q:Quit ";
+        let right_help = " Ctrl+t:Theme  Ctrl+q:Quit ";
         let right_help_x = divider_x + 1 + (right_pane_width.saturating_sub(right_help.len() as u16)) / 2;
-        execute!(stdout, cursor::MoveTo(right_help_x, start_y + box_height - 1), style::SetForegroundColor(Color::DarkGrey))?;
+        execute!(stdout, cursor::MoveTo(right_help_x, start_y + box_height - 1), style::SetForegroundColor(active_theme.dim))?;
         write!(stdout, "{}", right_help)?;
         execute!(stdout, style::ResetColor)?;
 
@@ -294,9 +315,9 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
         let search_y = start_y + 2;
         execute!(stdout, cursor::MoveTo(start_x + 2, search_y))?;
         if search_active {
-            execute!(stdout, style::SetForegroundColor(Color::Cyan), style::SetAttribute(style::Attribute::Bold))?;
+            execute!(stdout, style::SetForegroundColor(active_theme.accent), style::SetAttribute(style::Attribute::Bold))?;
         } else {
-            execute!(stdout, style::SetForegroundColor(Color::Yellow))?;
+            execute!(stdout, style::SetForegroundColor(active_theme.title))?;
         }
         write!(stdout, "{}", search_label)?;
         execute!(stdout, style::ResetColor)?;
@@ -304,13 +325,13 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
         // Search Input box
         execute!(stdout, cursor::MoveTo(start_x + 12, search_y))?;
         if search_active {
-            execute!(stdout, style::SetForegroundColor(Color::Cyan))?;
+            execute!(stdout, style::SetForegroundColor(active_theme.accent))?;
         } else {
-            execute!(stdout, style::SetForegroundColor(Color::DarkGrey))?;
+            execute!(stdout, style::SetForegroundColor(active_theme.dim))?;
         }
         write!(stdout, "[")?;
         
-        execute!(stdout, cursor::MoveTo(start_x + 13, search_y), style::SetForegroundColor(Color::White))?;
+        execute!(stdout, cursor::MoveTo(start_x + 13, search_y), style::SetForegroundColor(active_theme.text))?;
         let search_inner_width = left_pane_width.saturating_sub(15);
         let mut display_search = search_query.clone();
         if display_search.len() > search_inner_width as usize {
@@ -322,9 +343,9 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
         write!(stdout, "{}", " ".repeat(spaces as usize))?;
 
         if search_active {
-            execute!(stdout, style::SetForegroundColor(Color::Cyan))?;
+            execute!(stdout, style::SetForegroundColor(active_theme.accent))?;
         } else {
-            execute!(stdout, style::SetForegroundColor(Color::DarkGrey))?;
+            execute!(stdout, style::SetForegroundColor(active_theme.dim))?;
         }
         write!(stdout, "]")?;
         execute!(stdout, style::ResetColor)?;
@@ -346,7 +367,7 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
         if filtered_apps.is_empty() {
              let msg = "No apps found.";
              let msg_x = start_x + 1 + (left_pane_width.saturating_sub(msg.len() as u16)) / 2;
-             execute!(stdout, cursor::MoveTo(msg_x, content_start_y), style::SetForegroundColor(Color::DarkGrey))?;
+             execute!(stdout, cursor::MoveTo(msg_x, content_start_y), style::SetForegroundColor(active_theme.dim))?;
              write!(stdout, "{}", msg)?;
              execute!(stdout, style::ResetColor)?;
         }
@@ -362,12 +383,12 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
             let line_start_x = start_x + 1 + (left_pane_width.saturating_sub((name_str.len() + 1 + key_str.len()) as u16)) / 2;
             
             if actual_idx == selected {
-                // Selected: highlight with cyan background
+                // Selected: highlight with accent background
                 let line = format!("{} {}", name_str, key_str);
                 let marked_line = format!("> {} <", line);
                 let marked_start_x = start_x + 1 + (left_pane_width.saturating_sub(marked_line.len() as u16)) / 2;
                 
-                execute!(stdout, cursor::MoveTo(marked_start_x, row), style::SetForegroundColor(Color::Black), style::SetBackgroundColor(Color::Cyan))?;
+                execute!(stdout, cursor::MoveTo(marked_start_x, row), style::SetForegroundColor(Color::Black), style::SetBackgroundColor(active_theme.accent))?;
                 write!(stdout, "{}", marked_line)?;
                 execute!(stdout, style::ResetColor)?;
             } else {
@@ -381,23 +402,23 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
                         let matched = &name_str[pos..pos + search_query.len()];
                         let suffix = &name_str[pos + search_query.len()..];
 
-                        execute!(stdout, style::SetForegroundColor(Color::White))?;
+                        execute!(stdout, style::SetForegroundColor(active_theme.text))?;
                         write!(stdout, "{}", prefix)?;
                         
-                        execute!(stdout, style::SetForegroundColor(Color::Magenta), style::SetAttribute(style::Attribute::Bold))?;
+                        execute!(stdout, style::SetForegroundColor(active_theme.accent), style::SetAttribute(style::Attribute::Bold))?;
                         write!(stdout, "{}", matched)?;
                         
-                        execute!(stdout, style::SetForegroundColor(Color::White), style::SetAttribute(style::Attribute::Reset))?;
+                        execute!(stdout, style::SetForegroundColor(active_theme.text), style::SetAttribute(style::Attribute::Reset))?;
                         write!(stdout, "{}", suffix)?;
                     }
                 }
                 
                 if !match_found {
-                    execute!(stdout, style::SetForegroundColor(Color::White))?;
+                    execute!(stdout, style::SetForegroundColor(active_theme.text))?;
                     write!(stdout, "{}", name_str)?;
                 }
 
-                execute!(stdout, style::SetForegroundColor(Color::DarkGrey))?;
+                execute!(stdout, style::SetForegroundColor(active_theme.dim))?;
                 write!(stdout, " {}", key_str)?;
                 execute!(stdout, style::ResetColor)?;
             }
@@ -414,7 +435,7 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
             // 1. Draw Title
             let details_title = " App Details ";
             let details_title_x = divider_x + 1 + (right_pane_width.saturating_sub(details_title.len() as u16)) / 2;
-            execute!(stdout, cursor::MoveTo(details_title_x, start_y + 1), style::SetForegroundColor(Color::Cyan), style::SetAttribute(style::Attribute::Bold))?;
+            execute!(stdout, cursor::MoveTo(details_title_x, start_y + 1), style::SetForegroundColor(active_theme.accent), style::SetAttribute(style::Attribute::Bold))?;
             write!(stdout, "{}", details_title)?;
             execute!(stdout, style::ResetColor)?;
 
@@ -442,13 +463,13 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
             };
 
             // 2. Name
-            draw_detail_line(&mut stdout, "Name", &app.name, Color::Yellow, Color::White)?;
+            draw_detail_line(&mut stdout, "Name", &app.name, active_theme.title, active_theme.text)?;
 
             // 3. Hotkey
-            draw_detail_line(&mut stdout, "Hotkey", &app.key, Color::Yellow, Color::White)?;
+            draw_detail_line(&mut stdout, "Hotkey", &app.key, active_theme.title, active_theme.text)?;
 
             // 4. Command
-            draw_detail_line(&mut stdout, "Command", &app.cmd, Color::Yellow, Color::White)?;
+            draw_detail_line(&mut stdout, "Command", &app.cmd, active_theme.title, active_theme.text)?;
 
             // 5. Resolved Path
             let path_resolved = launcher::resolve_command(&app.cmd);
@@ -457,19 +478,19 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
             } else {
                 ("Not found / Blocked".to_string(), Color::Red)
             };
-            draw_detail_line(&mut stdout, "Resolved", &path_str, Color::Yellow, path_color)?;
+            draw_detail_line(&mut stdout, "Resolved", &path_str, active_theme.title, path_color)?;
 
             // 6. Arguments
             let args_str = match &app.args {
                 Some(args) if !args.is_empty() => args.join(" "),
                 _ => "None".to_string(),
             };
-            draw_detail_line(&mut stdout, "Args", &args_str, Color::Yellow, Color::White)?;
+            draw_detail_line(&mut stdout, "Args", &args_str, active_theme.title, active_theme.text)?;
 
             // 7. Description
             let desc_str = app.description.as_deref().unwrap_or("No description provided");
-            let desc_color = if app.description.is_some() { Color::White } else { Color::DarkGrey };
-            draw_detail_line(&mut stdout, "Desc", desc_str, Color::Yellow, desc_color)?;
+            let desc_color = if app.description.is_some() { active_theme.text } else { active_theme.dim };
+            draw_detail_line(&mut stdout, "Desc", desc_str, active_theme.title, desc_color)?;
         }
 
         // Draw Form Modal Overlay
@@ -480,7 +501,7 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
                 let modal_x = (term_cols.saturating_sub(modal_width)) / 2;
                 let modal_y = (term_rows.saturating_sub(modal_height)) / 2;
 
-                execute!(stdout, style::SetForegroundColor(Color::Magenta))?;
+                execute!(stdout, style::SetForegroundColor(active_theme.accent))?;
                 
                 // Top
                 let title_bar = format!(" {} ", form.title);
@@ -508,9 +529,9 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
                     // Label
                     execute!(stdout, cursor::MoveTo(modal_x + 3, field_y))?;
                     if idx == form.active_field {
-                        execute!(stdout, style::SetForegroundColor(Color::Cyan), style::SetAttribute(style::Attribute::Bold))?;
+                        execute!(stdout, style::SetForegroundColor(active_theme.accent), style::SetAttribute(style::Attribute::Bold))?;
                     } else {
-                        execute!(stdout, style::SetForegroundColor(Color::Yellow))?;
+                        execute!(stdout, style::SetForegroundColor(active_theme.title))?;
                     }
                     write!(stdout, "{:11}", field.label)?;
                     execute!(stdout, style::ResetColor)?;
@@ -518,14 +539,14 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
                     // Input bracket
                     execute!(stdout, cursor::MoveTo(modal_x + 15, field_y))?;
                     if idx == form.active_field {
-                        execute!(stdout, style::SetForegroundColor(Color::Cyan))?;
+                        execute!(stdout, style::SetForegroundColor(active_theme.accent))?;
                     } else {
-                        execute!(stdout, style::SetForegroundColor(Color::DarkGrey))?;
+                        execute!(stdout, style::SetForegroundColor(active_theme.dim))?;
                     }
                     write!(stdout, "[")?;
                     
                     // Value
-                    execute!(stdout, cursor::MoveTo(modal_x + 16, field_y), style::SetForegroundColor(Color::White))?;
+                    execute!(stdout, cursor::MoveTo(modal_x + 16, field_y), style::SetForegroundColor(active_theme.text))?;
                     let val_limit = 39;
                     let mut display_val = field.value.clone();
                     if display_val.len() > val_limit {
@@ -539,9 +560,9 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
 
                     // Close bracket
                     if idx == form.active_field {
-                        execute!(stdout, style::SetForegroundColor(Color::Cyan))?;
+                        execute!(stdout, style::SetForegroundColor(active_theme.accent))?;
                     } else {
-                        execute!(stdout, style::SetForegroundColor(Color::DarkGrey))?;
+                        execute!(stdout, style::SetForegroundColor(active_theme.dim))?;
                     }
                     write!(stdout, "]")?;
                     execute!(stdout, style::ResetColor)?;
@@ -550,7 +571,7 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
                 // Draw buttons/help in modal
                 let form_help = " [Enter] Save   [Esc] Cancel   [Tab] Next ";
                 let form_help_x = modal_x + (modal_width.saturating_sub(form_help.len() as u16)) / 2;
-                execute!(stdout, cursor::MoveTo(form_help_x, modal_y + 11), style::SetForegroundColor(Color::DarkGrey))?;
+                execute!(stdout, cursor::MoveTo(form_help_x, modal_y + 11), style::SetForegroundColor(active_theme.dim))?;
                 write!(stdout, "{}", form_help)?;
                 execute!(stdout, style::ResetColor)?;
 
@@ -615,6 +636,62 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
             }
         }
 
+        // Draw Theme Select Modal Overlay
+        if modal_state == ModalState::ThemeSelect {
+            let modal_width = 44;
+            let modal_height = PREDEFINED_THEMES.len() as u16 + 6;
+            let modal_x = (term_cols.saturating_sub(modal_width)) / 2;
+            let modal_y = (term_rows.saturating_sub(modal_height)) / 2;
+
+            execute!(stdout, style::SetForegroundColor(active_theme.accent))?;
+            
+            // Top
+            let title = " Select Theme ";
+            let dash_len = (modal_width as usize - 2 - title.len()) / 2;
+            let left_dashes = "═".repeat(dash_len);
+            let right_dashes = "═".repeat(modal_width as usize - 2 - title.len() - dash_len);
+            execute!(stdout, cursor::MoveTo(modal_x, modal_y))?;
+            write!(stdout, "╔{}{}{}╗", left_dashes, title, right_dashes)?;
+
+            // Sides
+            for r in 1..modal_height - 1 {
+                execute!(stdout, cursor::MoveTo(modal_x, modal_y + r))?;
+                write!(stdout, "║{}║", " ".repeat((modal_width - 2) as usize))?;
+            }
+
+            // Bottom
+            execute!(stdout, cursor::MoveTo(modal_x, modal_y + modal_height - 1))?;
+            write!(stdout, "╚{}╝", "═".repeat((modal_width - 2) as usize))?;
+            execute!(stdout, style::ResetColor)?;
+
+            // Draw themes list
+            for (idx, theme) in PREDEFINED_THEMES.iter().enumerate() {
+                let theme_y = modal_y + 2 + idx as u16;
+                
+                // Format the theme name to fit and center in modal
+                let display_name = format!("  {}  ", theme.name);
+                let text_x = modal_x + (modal_width.saturating_sub(display_name.len() as u16)) / 2;
+                execute!(stdout, cursor::MoveTo(text_x, theme_y))?;
+
+                if idx == selected_theme_idx {
+                    execute!(stdout, style::SetForegroundColor(Color::Black), style::SetBackgroundColor(active_theme.accent))?;
+                    write!(stdout, " {} ", theme.name)?;
+                    execute!(stdout, style::ResetColor)?;
+                } else {
+                    execute!(stdout, style::SetForegroundColor(active_theme.text))?;
+                    write!(stdout, "  {}  ", theme.name)?;
+                    execute!(stdout, style::ResetColor)?;
+                }
+            }
+
+            // Draw help/instructions at the bottom
+            let theme_help = " [Up/Down] Navigate  [Enter] Select  [Esc] Cancel ";
+            let theme_help_x = modal_x + (modal_width.saturating_sub(theme_help.len() as u16)) / 2;
+            execute!(stdout, cursor::MoveTo(theme_help_x, modal_y + modal_height - 3), style::SetForegroundColor(active_theme.dim))?;
+            write!(stdout, "{}", theme_help)?;
+            execute!(stdout, style::ResetColor)?;
+        }
+
         // Show/Hide Caret Cursor dynamically
         let mut show_cursor = false;
         let mut cursor_x = 0;
@@ -661,6 +738,39 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
                             modal_state = ModalState::None;
                         }
                         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                            modal_state = ModalState::None;
+                        }
+                        _ => {}
+                    }
+                }
+                ModalState::ThemeSelect => {
+                    match key_event.code {
+                        KeyCode::Esc => {
+                            modal_state = ModalState::None;
+                        }
+                        KeyCode::Up => {
+                            if selected_theme_idx > 0 {
+                                selected_theme_idx -= 1;
+                            } else {
+                                selected_theme_idx = PREDEFINED_THEMES.len() - 1;
+                            }
+                        }
+                        KeyCode::Down => {
+                            if selected_theme_idx + 1 < PREDEFINED_THEMES.len() {
+                                selected_theme_idx += 1;
+                            } else {
+                                selected_theme_idx = 0;
+                            }
+                        }
+                        KeyCode::Enter => {
+                            let selected_theme = &PREDEFINED_THEMES[selected_theme_idx];
+                            config.theme = Some(config::Theme {
+                                accent_color: Some(selected_theme.accent_color.to_string()),
+                                border_color: Some(selected_theme.border_color.to_string()),
+                                text_color: Some(selected_theme.text_color.to_string()),
+                                dim_color: Some(selected_theme.dim_color.to_string()),
+                            });
+                            let _ = config.save(&config_path);
                             modal_state = ModalState::None;
                         }
                         _ => {}
@@ -876,6 +986,17 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
                                         error_message: None,
                                         is_edit: true,
                                     });
+                                }
+                            }
+                            (KeyCode::Char('t'), KeyModifiers::CONTROL) => {
+                                modal_state = ModalState::ThemeSelect;
+                                // Attempt to match selected_theme_idx to currently set theme
+                                if let Some(ref current_theme) = config.theme {
+                                    if let Some(ref current_accent) = current_theme.accent_color {
+                                        if let Some(pos) = PREDEFINED_THEMES.iter().position(|t| t.accent_color == current_accent) {
+                                            selected_theme_idx = pos;
+                                        }
+                                    }
                                 }
                             }
                             (KeyCode::Up, _) => {
