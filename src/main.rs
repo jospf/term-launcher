@@ -242,7 +242,7 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
         write!(stdout, "{}", left_help)?;
         
         // Help Text (Right bottom border)
-        let right_help = " Ctrl+q:Quit ";
+        let right_help = " /:Search  Ctrl+q:Quit ";
         let right_help_x = divider_x + 1 + (right_pane_width.saturating_sub(right_help.len() as u16)) / 2;
         execute!(stdout, cursor::MoveTo(right_help_x, start_y + box_height - 1), style::SetForegroundColor(Color::DarkGrey))?;
         write!(stdout, "{}", right_help)?;
