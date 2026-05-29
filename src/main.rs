@@ -186,7 +186,7 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
         
         // Calculate menu dimensions
         // Box Width: at least 80, max 80% of screen
-        let box_width = std::cmp::max(80, (term_cols as f32 * 0.8) as u16);
+        let box_width = std::cmp::max(90, (term_cols as f32 * 0.8) as u16);
         let box_height = std::cmp::max(12, (term_rows as f32 * 0.6) as u16);
         
         let start_x = (term_cols.saturating_sub(box_width)) / 2;
@@ -236,13 +236,13 @@ fn run_app(mut config: Config, config_path: PathBuf) -> io::Result<()> {
         execute!(stdout, style::ResetColor)?;
 
         // Help Text (Left bottom border)
-        let left_help = " Ctrl+a:Add  Ctrl+d:Del  Ctrl+e:Edit ";
+        let left_help = " Ctrl+a:Add  Ctrl+d:Del  Ctrl+e:Edit  /:Search ";
         let left_help_x = start_x + 1 + (left_pane_width.saturating_sub(left_help.len() as u16)) / 2;
         execute!(stdout, cursor::MoveTo(left_help_x, start_y + box_height - 1), style::SetForegroundColor(Color::DarkGrey))?;
         write!(stdout, "{}", left_help)?;
         
         // Help Text (Right bottom border)
-        let right_help = " /:Search  Ctrl+q:Quit ";
+        let right_help = " Ctrl+q:Quit ";
         let right_help_x = divider_x + 1 + (right_pane_width.saturating_sub(right_help.len() as u16)) / 2;
         execute!(stdout, cursor::MoveTo(right_help_x, start_y + box_height - 1), style::SetForegroundColor(Color::DarkGrey))?;
         write!(stdout, "{}", right_help)?;
