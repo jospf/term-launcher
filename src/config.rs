@@ -12,9 +12,18 @@ pub struct App {
     pub description: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct Theme {
+    pub accent_color: Option<String>,
+    pub border_color: Option<String>,
+    pub text_color: Option<String>,
+    pub dim_color: Option<String>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
     pub apps: Vec<App>,
+    pub theme: Option<Theme>,
 }
 
 impl Config {

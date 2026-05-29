@@ -39,6 +39,47 @@ enum ModalState {
     DeleteConfirm,
 }
 
+fn parse_color(s: &str) -> Color {
+    match s.to_lowercase().as_str() {
+        "black" => Color::Black,
+        "dark_red" | "darkred" => Color::DarkRed,
+        "dark_green" | "darkgreen" => Color::DarkGreen,
+        "dark_yellow" | "darkyellow" => Color::DarkYellow,
+        "dark_blue" | "darkblue" => Color::DarkBlue,
+        "dark_magenta" | "darkmagenta" => Color::DarkMagenta,
+        "dark_cyan" | "darkcyan" => Color::DarkCyan,
+        "grey" => Color::Grey,
+        "dark_grey" | "darkgrey" => Color::DarkGrey,
+        "red" => Color::Red,
+        "green" => Color::Green,
+        "yellow" => Color::Yellow,
+        "blue" => Color::Blue,
+        "magenta" => Color::Magenta,
+        "cyan" => Color::Cyan,
+        "white" => Color::White,
+        _ => Color::Reset,
+    }
+}
+
+struct ActiveTheme {
+    border: Color,
+    accent: Color,
+    text: Color,
+    dim: Color,
+    title: Color,
+}
+
+impl ActiveTheme {
+    fn from_config(config: &Config) -> Self {
+        let border = config.theme.as_ref().and_then(|t| t.border_color.as_ref()).map(|s| parse_color(s)).unwrap_or(Color::Blue);
+        let accent = config.theme.as_ref().and_then(|t| t.accent_color.as_ref()).map(|s| parse_color(s)).unwrap_or(Color::Cyan);
+        let text = config.theme.as_ref().and_then(|t| t.text_color.as_ref()).map(|s| parse_color(s)).unwrap_or(Color::White);
+        let dim = config.theme.as_ref().and_then(|t| t.dim_color.as_ref()).map(|s| parse_color(s)).unwrap_or(Color::DarkGrey);
+        let title = Color::Yellow;
+        Self { border, accent, text, dim, title }
+    }
+}
+
 fn sanitize_for_tui(s: &str) -> String {
     s.chars().filter(|c| !c.is_control()).collect()
 }
