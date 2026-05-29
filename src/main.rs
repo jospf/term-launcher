@@ -180,7 +180,7 @@ fn main() {
         let config_contents = fs::read_to_string(&config_path).expect("Failed to read config");
         toml::from_str(&config_contents).expect("Failed to parse config")
     } else {
-        Config { apps: vec![] }
+        Config { apps: vec![], theme: None }
     };
 
     // TUI setup with guard to ensure cleanup on panic/exit
